@@ -4,8 +4,8 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-TOKEN = "MTM4NDkxNDA3NTQ2ODk1OTc1NA.GYuzi9.ZbIqOXALZcR-Gns5Twq9JSLfXIXxxGgEq-2WZE"
-GUILD_ID = int("983604129890963506")
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID"))
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
