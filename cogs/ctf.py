@@ -7,35 +7,78 @@ from pytz import timezone as pytz_timezone
 import re
 
 class Color:
-    HEADER = '\033[95m'      # Purple
-    OKBLUE = '\033[94m'      # Blue
-    OKCYAN = '\033[96m'      # Cyan
-    OKGREEN = '\033[92m'     # Green
-    WARNING = '\033[93m'     # Yellow
-    FAIL = '\033[91m'        # Red
-    ENDC = '\033[0m'         # Reset
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
 def debug_print(tag: str, message: str, color: str = Color.OKBLUE):
     print(f"{color}[{tag}]{Color.ENDC} {message}")
 
+class CTFView(discord.ui.View):
+    def __init__(self, cog, message_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.message_id = message_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return not interaction.user.bot
+
+    async def handle_response(self, interaction: discord.Interaction, emoji: str):
+        user = interaction.user
+        data = self.cog.ctf_announcements.get(self.message_id)
+        if not data:
+            return await interaction.response.send_message("CTF data missing or expired.", ephemeral=True)
+
+        if data["locked"] and emoji in ["✅", "🤔"]:
+            return await interaction.response.send_message("⛔ Reactions locked 30 mins before start.", ephemeral=True)
+
+        for e in ["✅", "❌", "🤔"]:
+            data["participants"][e].discard(user.id)
+
+        data["participants"][emoji].add(user.id)
+
+        channel = interaction.guild.get_channel(data["channel_id"])
+        if emoji in ["✅", "🤔"]:
+            await channel.set_permissions(user, read_messages=True, send_messages=True)
+        else:
+            await channel.set_permissions(user, overwrite=None)
+
+        await self.cog.update_embed(self.message_id)
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="ctf_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_response(interaction, "✅")
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, custom_id="ctf_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_response(interaction, "❌")
+
+    @discord.ui.button(label="Tentative", style=discord.ButtonStyle.secondary, custom_id="ctf_tentative")
+    async def tentative(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_response(interaction, "🤔")
 
 class CTF(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.ctf_announcements = {}  # message_id -> data
+        self.ctf_announcements = {}
         self.check_ctf_timers.start()
         debug_print("INIT", "CTF Cog loaded and timer started.", Color.OKGREEN)
-    def parse_datetime_string(self, dt_string: str):
-        cleaned = dt_string.strip().replace("IST", "").strip()
-        naive_dt = parser.parse(cleaned)
-        ist = pytz_timezone("Asia/Kolkata")
-        return ist.localize(naive_dt).astimezone(timezone.utc)
 
     @commands.command(name="ctf")
     async def announce_ctf(self, ctx, name: str, range_str: str, *, description: str):
-        """Post a new CTF announcement with start and end time."""
+        required_role_id = 1231973239085863093
+        if not any(role.id == required_role_id for role in ctx.author.roles):
+            await ctx.send("❌ You do not have permission to use this command.")
+            debug_print("AUTH", f"Unauthorized attempt by {ctx.author.display_name}", Color.FAIL)
+            return
+
         try:
             await ctx.message.delete()
             debug_print("COMMAND", f"Deleted user command message: {ctx.message.content}", Color.OKCYAN)
@@ -43,21 +86,16 @@ class CTF(commands.Cog):
             debug_print("WARN", "Missing permission to delete user message.", Color.WARNING)
 
         try:
-            # Example: 'Fri, 20 June 2025, 15:30 IST — Sun, 22 June 2025, 03:30 IST'
             parts = re.split(r"\s+[\u2013\u2014\-]{1,2}\s+", range_str)
             if len(parts) != 2:
                 raise ValueError("Date range must contain exactly two dates separated by a dash")
 
             ist = pytz_timezone("Asia/Kolkata")
-            start_dt_raw = parser.parse(parts[0])
-            end_dt_raw = parser.parse(parts[1])
+            start_naive = parser.parse(parts[0], ignoretz=True)
+            end_naive = parser.parse(parts[1], ignoretz=True)
 
-            # Only localize if not already timezone-aware
-            start_dt = start_dt_raw if start_dt_raw.tzinfo else ist.localize(start_dt_raw)
-            end_dt = end_dt_raw if end_dt_raw.tzinfo else ist.localize(end_dt_raw)
-
-            start_dt = start_dt.astimezone(timezone.utc)
-            end_dt = end_dt.astimezone(timezone.utc)
+            start_dt = ist.localize(start_naive)
+            end_dt = ist.localize(end_naive)
 
             debug_print("TIME", f"Parsed start: {start_dt}, end: {end_dt}", Color.OKCYAN)
         except Exception as e:
@@ -81,9 +119,9 @@ class CTF(commands.Cog):
             await ctx.send("Failed to post announcement.")
             return
 
-        for emoji in ["✅", "❌", "🤔"]:
-            await msg.add_reaction(emoji)
-            debug_print("REACTION", f"Added reaction: {emoji}", Color.OKBLUE)
+        view = CTFView(self, msg.id)
+        await msg.edit(view=view)
+        debug_print("BUTTONS", f"Added UI buttons to message {msg.id}", Color.OKGREEN)
 
         guild = ctx.guild
         overwrites = {
@@ -127,57 +165,6 @@ class CTF(commands.Cog):
         await msg.edit(embed=embed)
         debug_print("UPDATE", f"Updated embed for message ID: {message_id}", Color.OKBLUE)
 
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot or reaction.message.id not in self.ctf_announcements:
-            return
-
-        emoji = str(reaction.emoji)
-        if emoji not in ["✅", "❌", "🤔"]:
-            return
-
-        data = self.ctf_announcements[reaction.message.id]
-
-        if data.get("locked") and emoji in ["✅", "🤔"]:
-            await reaction.message.remove_reaction(emoji, user)
-            debug_print("LOCKED", f"Rejected reaction by {user} due to lock.", Color.WARNING)
-            return
-
-        for other in ["✅", "❌", "🤔"]:
-            if other != emoji:
-                await reaction.message.remove_reaction(other, user)
-                data["participants"][other].discard(user.id)
-
-        data["participants"][emoji].add(user.id)
-
-        if emoji in ["✅", "🤔"]:
-            guild = reaction.message.guild
-            channel = guild.get_channel(data["channel_id"])
-            await channel.set_permissions(user, read_messages=True, send_messages=True)
-
-        await self.update_embed(reaction.message.id)
-        debug_print("REACTION ADD", f"{user.display_name} reacted with {emoji}", Color.OKBLUE)
-
-    @commands.Cog.listener()
-    async def on_reaction_remove(self, reaction, user):
-        if user.bot or reaction.message.id not in self.ctf_announcements:
-            return
-
-        emoji = str(reaction.emoji)
-        if emoji not in ["✅", "❌", "🤔"]:
-            return
-
-        data = self.ctf_announcements[reaction.message.id]
-        data["participants"][emoji].discard(user.id)
-
-        if emoji in ["✅", "🤔"]:
-            guild = reaction.message.guild
-            channel = guild.get_channel(data["channel_id"])
-            await channel.set_permissions(user, overwrite=None)
-
-        await self.update_embed(reaction.message.id)
-        debug_print("REACTION REMOVE", f"{user.display_name} removed {emoji}", Color.OKBLUE)
-
     @tasks.loop(minutes=1)
     async def check_ctf_timers(self):
         now = datetime.now(timezone.utc)
@@ -197,16 +184,16 @@ class CTF(commands.Cog):
                 debug_print("PING", f"Start notification sent for CTF {channel.name}", Color.OKCYAN)
 
             if now >= data["end_time"] + timedelta(hours=72):
-                await channel.send("📦 Archiving this channel now.")
-                await channel.edit(archived=True)
+                archive_category = discord.Object(id=1365950745291128903)
+                await channel.send("@here 📦 Archiving this channel .")
+                await channel.edit(category=archive_category, sync_permissions=True)
                 del self.ctf_announcements[msg_id]
-                debug_print("ARCHIVE", f"Archived CTF channel {channel.name} after 72h", Color.WARNING)
+                debug_print("ARCHIVE", f"Moved CTF channel {channel.name} to archive category", Color.WARNING)
 
     @check_ctf_timers.before_loop
     async def before_timer(self):
         await self.bot.wait_until_ready()
         debug_print("TASK", "Timer waiting for bot ready...", Color.OKGREEN)
-
 
 async def setup(bot):
     await bot.add_cog(CTF(bot))
