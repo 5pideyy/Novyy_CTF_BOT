@@ -73,7 +73,7 @@ class CTF(commands.Cog):
 
     @commands.command(name="ctf")
     async def announce_ctf(self, ctx, name: str, range_str: str, *, description: str):
-        required_role_id = 1231973239085863093
+        required_role_id = 1385239398718902403
         if not any(role.id == required_role_id for role in ctx.author.roles):
             await ctx.send("❌ You do not have permission to use this command.")
             debug_print("AUTH", f"Unauthorized attempt by {ctx.author.display_name}", Color.FAIL)
@@ -184,7 +184,7 @@ class CTF(commands.Cog):
                 debug_print("PING", f"Start notification sent for CTF {channel.name}", Color.OKCYAN)
 
             if now >= data["end_time"] + timedelta(hours=72):
-                archive_category = discord.Object(id=1365950745291128903)
+                archive_category = discord.Object(id=1379020840879915048)
                 await channel.send("@here 📦 Archiving this channel .")
                 await channel.edit(category=archive_category, sync_permissions=True)
                 del self.ctf_announcements[msg_id]
